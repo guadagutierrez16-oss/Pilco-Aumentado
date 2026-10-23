@@ -120,6 +120,17 @@ section{margin-top:1.5rem}
   display:flex;justify-content:space-between;align-items:flex-start;gap:.5rem;z-index:5;pointer-events:none}
 .hud-btn{pointer-events:auto;background:rgba(14,42,71,.82);color:#EAF4FB;border:1.5px solid rgba(56,189,248,.5);border-radius:999px;padding:.55rem 1.1rem;font-weight:700;cursor:pointer;backdrop-filter:blur(6px)}
 #btnSound{background:#F59E0B;color:#1F1400;border-color:#F59E0B}
+#btnTalk{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 4.6rem);z-index:6;pointer-events:auto;
+  background:#7C3AED;border-color:#C4B5FD;color:#fff;font-size:1.05rem;padding:.7rem 1.5rem;box-shadow:0 6px 22px rgba(124,58,237,.45)}
+#btnTalk[hidden]{display:none}
+#btnTalk[aria-pressed="true"]{background:#E23B3B;border-color:#fecaca;box-shadow:0 6px 22px rgba(226,59,59,.45)}
+#btnTalk:disabled{opacity:.7;cursor:progress}
+#subs{position:absolute;left:1rem;right:1rem;bottom:calc(env(safe-area-inset-bottom,0px) + 8.6rem);z-index:6;margin:0 auto;max-width:34rem;text-align:center;
+  background:rgba(14,42,71,.82);color:#EAF4FB;padding:.55rem .9rem;border-radius:14px;font-weight:600;line-height:1.35;pointer-events:none}
+#subs[hidden]{display:none}
+#subs.vos{color:#bfeaff;font-weight:500}
+.agent{display:flex;flex-direction:column;gap:.25rem;font-size:.85rem;color:var(--muted);flex-basis:100%}
+.agent input{font:inherit;padding:.45rem .6rem;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:inherit}
 #hudMsg{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 1.5rem);
   margin:0;background:rgba(14,42,71,.82);color:#EAF4FB;padding:.55rem 1.1rem;border-radius:999px;font-weight:600;white-space:nowrap;z-index:5}
 .reticle{position:absolute;left:50%;top:50%;width:min(62vw,300px);aspect-ratio:1;transform:translate(-50%,-50%);z-index:4;pointer-events:none;
@@ -156,7 +167,7 @@ section{margin-top:1.5rem}
 <header class="top">
   <div class="brand">
     <span class="lens" aria-hidden="true"></span>
-    <div><h1>Lente DIA</h1><p>Imágenes que cobran vida al enfocarlas · Pilco, guía de Formosa</p></div>
+    <div><h1>Lente DIA</h1><p>Imágenes que cobran vida al enfocarlas · Conversá con Pilco, guía de Formosa</p></div>
   </div>
   <button id="btnView" class="primary">Abrir cámara</button>
 </header>
@@ -212,6 +223,8 @@ section{margin-top:1.5rem}
     <button id="btnClose" class="hud-btn">Cerrar</button>
     <button id="btnSound" class="hud-btn" hidden>Activar sonido</button>
   </div>
+  <p id="subs" role="status" hidden></p>
+  <button id="btnTalk" class="hud-btn" hidden aria-pressed="false">🎙 Hablar con Pilco</button>
   <p id="hudMsg" role="status">Abriendo cámara…</p>
 </div>
 
@@ -239,6 +252,10 @@ const MINDAR_IMAGE = 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-ima
 const MINDAR_THREE = 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js';
 const TARGET_URL = 'lente-dia://marcadores.mind';
 const $ = id => document.getElementById(id);
+const AGENTE_PILCO = 'agent_9801m4habtcjffxtzdvys607dav2';
+const ELEVEN_SDK = ['https://cdn.jsdelivr.net/npm/@elevenlabs/client@1.26.0/+esm', 'https://esm.sh/@elevenlabs/client@1.26.0'];
+/* Estado de la conversación por voz: lo lee el rig del personaje en cada cuadro */
+const voz = { conv: null, modo: 'off', pensando: false };
 
 /* Los marcadores compilados se entregan a MindAR sin pasar por la red */
 let currentMind = null;
@@ -412,7 +429,15 @@ function card(it, i) {
 
   const opts = el.querySelector('.opts');
   if (it.kind === 'video') { opts.append(checkbox('Con sonido', 'audio', it), checkbox('Repetir', 'loop', it)); }
-  if (it.kind === 'model') { opts.append(checkbox('Girar solo', 'spin', it)); }
+  if (it.kind === 'model') {
+    opts.append(checkbox('Girar solo', 'spin', it));
+    const lab = document.createElement('label'); lab.className = 'agent';
+    lab.append('Agente de voz de ElevenLabs (opcional: para conversar con la figura)');
+    const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = 'agent_…'; inp.autocomplete = 'off'; inp.spellcheck = false;
+    inp.value = it.agente || '';
+    inp.addEventListener('change', () => { it.agente = inp.value.trim(); store.put(it); });
+    lab.append(inp); opts.append(lab);
+  }
 
   el.querySelector('.del').addEventListener('click', async () => {
     if (!confirm('¿Borrar el par ' + (i + 1) + '?')) return;
@@ -553,13 +578,130 @@ async function buildContent(THREE, GLTFLoader, it, video, sess) {
   const inner = new THREE.Group(); inner.add(obj);
   inner.scale.setScalar(s / (Math.max(size.x, size.y, size.z) || 1));
   const pivot = new THREE.Group(); pivot.rotation.x = Math.PI / 2; pivot.add(inner);
-  if (gltf.animations && gltf.animations.length) {
+  const rig = it.agente ? buildRig(obj) : null;       // con agente de voz, el movimiento lo maneja el rig
+  if (rig) sess.rigs.push(rig);
+  else if (gltf.animations && gltf.animations.length) {
     const mx = new THREE.AnimationMixer(obj);
     gltf.animations.forEach(cl => mx.clipAction(cl).play());
     sess.mixers.push(mx);
   }
   if (it.spin) sess.spinners.push(inner);
   return { root: pivot };
+}
+
+
+/* ---------- Voz: conversar con el personaje ---------- */
+async function cargarSDK() {
+  for (const url of ELEVEN_SDK) {
+    try { const m = await import(url); if (m.Conversation) return m; } catch (e) { console.warn('SDK no disponible en', url, e); }
+  }
+  throw new Error('sdk');
+}
+function subtitular(txt, quien) {
+  const el = $('subs'); if (!txt) { el.hidden = true; return; }
+  el.textContent = (quien ? quien + ': ' : '') + txt.slice(0, 220);
+  el.classList.toggle('vos', quien === 'Vos'); el.hidden = false;
+}
+function vozLista() {
+  const b = $('btnTalk'); b.disabled = false; b.setAttribute('aria-pressed', 'false');
+  b.textContent = '🎙 Hablar con ' + nombreAgente();
+}
+function nombreAgente() { const it = items.find(i => i.agente); return (it && it.nombre) || 'Pilco'; }
+function resetVoz() { voz.conv = null; voz.modo = 'off'; voz.pensando = false; if (!$('viewer').hidden) vozLista(); }
+async function terminarVoz() {
+  const c = voz.conv; resetVoz(); subtitular('');
+  try { c && await c.endSession(); } catch (e) { console.warn(e); }
+}
+async function iniciarVoz() {
+  if (voz.conv) { await terminarVoz(); return; }
+  const it = items.find(i => i.agente); if (!it) return;
+  const b = $('btnTalk'); b.disabled = true; b.textContent = 'Conectando…'; voz.modo = 'connecting';
+  try { const st = await navigator.mediaDevices.getUserMedia({ audio: true }); st.getTracks().forEach(t => t.stop()); }
+  catch { resetVoz(); toast('Para conversar hace falta el micrófono. Permitilo en el navegador y volvé a tocar el botón.'); return; }
+  try {
+    const { Conversation } = await cargarSDK();
+    voz.conv = await Conversation.startSession({
+      agentId: it.agente, connectionType: 'websocket',
+      onConnect: () => { voz.modo = 'listening'; b.disabled = false; b.setAttribute('aria-pressed', 'true'); b.textContent = '⏹ Terminar'; },
+      onDisconnect: () => resetVoz(),
+      onError: e => { console.error(e); toast('La conexión con ' + nombreAgente() + ' se cortó. Revisá tu internet y probá de nuevo.'); },
+      onModeChange: ({ mode }) => { voz.modo = mode === 'speaking' ? 'speaking' : 'listening'; if (mode === 'speaking') voz.pensando = false; },
+      onMessage: m => {
+        const quien = m.source || m.role, txt = m.message || m.text || ''; if (!txt) return;
+        if (quien === 'ai' || quien === 'agent') subtitular(txt, nombreAgente());
+        else { subtitular(txt, 'Vos'); voz.pensando = true; }
+      }
+    });
+  } catch (e) {
+    console.error(e); resetVoz();
+    toast(e && e.message === 'sdk' ? 'No cargó la librería de voz de ElevenLabs. Revisá la conexión.' : 'No se pudo conectar con el agente. Revisá que sea público en ElevenLabs.');
+  }
+}
+
+/* ---------- Rig de Pilco: boca, cabeza, ojos, orejas y brazos según lo que pasa en la charla ---------- */
+const RIG_NODOS = ['Pilco', 'Cabeza', 'Mandibula', 'BrazoDer', 'BrazoIzq', 'OjoIzq', 'OjoDer', 'OrejaIzq', 'OrejaDer'];
+function buildRig(obj) {
+  const n = {}, base = {};
+  for (const k of RIG_NODOS) { const o = obj.getObjectByName(k); if (o) { n[k] = o; base[k] = o.position.clone(); } }
+  if (!n.Mandibula || !n.Cabeza) return null;           // sin boca articulada no hay rig
+  return { n, base, mouth: 0, peak: 0.05, prevE: 0, kick: 0, hy: 0, hp: 0, hz: 0, bd: [0, 0], bi: [0, 0], oreja: 0,
+           blink: 0, proxBlink: 1.5, gest: null, proxGest: 1.2 };
+}
+const suav = (a, b, k, dt) => a + (b - a) * (1 - Math.exp(-k * dt));
+function updateRig(r, dt, t) {
+  const n = r.n, hab = voz.modo === 'speaking', esc = voz.modo === 'listening', pens = esc && voz.pensando, activo = voz.conv != null;
+  /* energía de la voz del agente (0..1), normalizada con su pico reciente */
+  let vol = 0, ent = 0;
+  if (hab) { try { vol = (voz.conv.getOutputVolume && voz.conv.getOutputVolume()) || 0; } catch {} }
+  if (esc && !pens) { try { ent = (voz.conv.getInputVolume && voz.conv.getInputVolume()) || 0; } catch {} }
+  r.peak = Math.max(vol, r.peak * Math.exp(-dt / 4), 0.04);
+  const E = hab ? Math.min(1, vol / (r.peak * 0.8)) : 0;
+  if (E - r.prevE > 0.28) r.kick = 0.13;                 // golpe de voz: cabeceo y orejas
+  r.prevE = E; r.kick *= Math.exp(-dt * 6);
+
+  /* boca: la mandíbula sigue la energía; si no habla, se cierra */
+  r.mouth = suav(r.mouth, hab ? E * 0.55 : 0, E > r.mouth ? 34 : 16, dt);
+  n.Mandibula.rotation.x = r.mouth;
+
+  /* cabeza: reposo / escucha (se inclina y asiente con tu voz) / piensa (mira arriba) / habla */
+  let ty = 0.2 * Math.sin(t * 0.6), tp = 0.02 * Math.sin(t * 1.1), tz = 0;
+  if (hab) { ty = 0.16 * Math.sin(t * 0.8) + E * 0.05 * Math.sin(t * 7); tp = 0.04 + r.kick; tz = 0.04 * Math.sin(t * 0.9); }
+  else if (pens) { ty = -0.1; tp = -0.12; tz = -0.13; }
+  else if (esc) { ty = 0.07 * Math.sin(t * 0.5); tp = 0.09 + Math.min(0.2, ent * 0.35); tz = 0.13; }
+  r.hy = suav(r.hy, ty, 5, dt); r.hp = suav(r.hp, tp, 7, dt); r.hz = suav(r.hz, tz, 5, dt);
+  n.Cabeza.rotation.set(r.hp, r.hy, r.hz);
+
+  /* orejas: se paran al escuchar y se sacuden con los golpes de voz */
+  const ao = esc ? 0.2 : 0.04 * Math.sin(t * 1.3);
+  r.oreja = suav(r.oreja, ao + r.kick * 1.4, 12, dt);
+  if (n.OrejaIzq) n.OrejaIzq.rotation.z = r.oreja;
+  if (n.OrejaDer) n.OrejaDer.rotation.z = -r.oreja;
+
+  /* parpadeo */
+  r.proxBlink -= dt;
+  if (r.proxBlink <= 0 && r.blink <= 0) { r.blink = 0.14; r.proxBlink = 2 + Math.random() * 3.4; if (Math.random() < 0.15) r.proxBlink = 0.35; }
+  let ey = pens ? 1.06 : 1;
+  if (r.blink > 0) { r.blink -= dt; const q = 1 - Math.max(0, r.blink) / 0.14; ey = 1 - 0.93 * Math.sin(Math.PI * Math.min(1, q)); }
+  if (n.OjoIzq) n.OjoIzq.scale.y = ey;
+  if (n.OjoDer) n.OjoDer.scale.y = ey;
+
+  /* brazos: ademanes al hablar (lupa, brazo abierto, señalar) y reposo con vaivén suave */
+  r.proxGest -= dt;
+  if (hab && !r.gest && r.proxGest <= 0) {
+    r.gest = { tipo: ['lupa', 'abre', 'senala', 'lupa'][Math.floor(Math.random() * 4)], t: 0, dur: 0.9 + Math.random() * 0.6 };
+    r.proxGest = 1.3 + Math.random() * 1.8;
+  }
+  let env = 0, tipo = '';
+  if (r.gest) { r.gest.t += dt; env = Math.sin(Math.PI * Math.min(1, r.gest.t / r.gest.dur)); tipo = r.gest.tipo; if (r.gest.t >= r.gest.dur) r.gest = null; }
+  const dx = (esc ? 0.1 : 0) + (tipo === 'lupa' ? 0.38 * env : 0), dz = 0.04 * Math.sin(t * 1.1) - (tipo === 'lupa' ? 0.15 * env : 0);
+  const ix = tipo === 'senala' ? -0.85 * env : tipo === 'abre' ? -0.3 * env : 0, iz = (tipo === 'abre' ? -0.5 * env : 0) - 0.03 * Math.sin(t * 0.9);
+  r.bd[0] = suav(r.bd[0], dx, 9, dt); r.bd[1] = suav(r.bd[1], dz, 9, dt);
+  r.bi[0] = suav(r.bi[0], ix, 9, dt); r.bi[1] = suav(r.bi[1], iz, 9, dt);
+  if (n.BrazoDer) n.BrazoDer.rotation.set(r.bd[0], 0, r.bd[1]);
+  if (n.BrazoIzq) n.BrazoIzq.rotation.set(r.bi[0], 0, r.bi[1]);
+
+  /* cuerpo: respiración y un poco de rebote al hablar */
+  if (n.Pilco) n.Pilco.position.y = r.base.Pilco.y + 0.006 * Math.sin(t * 1.6) + E * 0.012;
 }
 
 async function startAR(videos) {
@@ -582,7 +724,7 @@ async function startAR(videos) {
   scene.add(new THREE.HemisphereLight(0xffffff, 0x334466, 1.1));
   const dl = new THREE.DirectionalLight(0xffffff, 0.9); dl.position.set(0.5, 1, 2); scene.add(dl);
 
-  const sess = { mindar, renderer, videos, mixers: [], spinners: [], found: 0 };
+  const sess = { mindar, renderer, videos, mixers: [], spinners: [], rigs: [], found: 0 };
   session = sess;
   const msg = $('hudMsg'), ret = $('reticle');
   for (let i = 0; i < items.length; i++) {
@@ -608,6 +750,7 @@ async function startAR(videos) {
   renderer.setAnimationLoop(() => {
     const dt = clock.getDelta();
     sess.mixers.forEach(m => m.update(dt));
+    sess.rigs.forEach(r => updateRig(r, dt, clock.elapsedTime));
     sess.spinners.forEach(o => o.rotation.y += dt * 0.8);
     renderer.render(scene, camera);
   });
@@ -640,6 +783,8 @@ async function openViewer() {
   try {
     await startAR(videos);
     $('hudMsg').textContent = 'Apuntá a uno de tus marcadores';
+    const hay = items.some(i => i.agente);
+    $('btnTalk').hidden = !hay; if (hay) vozLista();
   } catch (e) {
     console.error(e);
     videos.forEach(v => v.pause());
@@ -649,6 +794,7 @@ async function openViewer() {
 }
 
 async function closeViewer() {
+  await terminarVoz(); $('btnTalk').hidden = true;
   const s = session; session = null;
   if (s) {
     try { s.renderer.setAnimationLoop(null); } catch {}
@@ -663,6 +809,7 @@ async function closeViewer() {
 }
 
 $('btnView').addEventListener('click', openViewer);
+$('btnTalk').addEventListener('click', iniciarVoz);
 $('btnClose').addEventListener('click', closeViewer);
 
 /* ---------- Inicio ---------- */
@@ -670,6 +817,7 @@ render();
 window.__lenteOK = true;
 store.all().then(async list => {
   items = (list || []).filter(i => i && i.target && i.content).sort((a, b) => a.created - b.created);
+  for (const i of items) if (i.kind === 'model' && i.agente === undefined && /pilco/i.test(i.contentName || '')) { i.agente = AGENTE_PILCO; i.nombre = 'Pilco'; store.put(i); }
   render();
   if (!items.length) {   /* primera vez: si junto a la página está proyecto-pilco.json, se carga solo */
     try {
